@@ -1,121 +1,67 @@
-
-from flask import Flask
-from flask import request
-from flask import render_template_string
-
-from flask_socketio import SocketIO
+from flask import Flask, request, jsonify, render_template
+import csv
+import os
+from datetime import datetime
 
 app = Flask(__name__)
 
-socketio = SocketIO(app,
-                    cors_allowed_origins="*")
+CSV_FILE = 'logs.csv'
 
-# ==========================================
-# HOME PAGE
-# ==========================================
+# Create CSV file if not exists
+if not os.path.exists(CSV_FILE):
+    with open(CSV_FILE, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Time", "ChipID", "Message"])
+
 
 @app.route('/')
-
 def home():
+    logs = []
 
-    html = """
+    with open(CSV_FILE, 'r') as file:
+        reader = csv.reader(file)
+        next(reader)
 
-<!DOCTYPE html>
-<html>
+        for row in reader:
+            logs.append(row)
 
-<head>
+    logs.reverse()
 
-<title>UART LOGGER</title>
+    return render_template('index.html', logs=logs)
 
-<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 
-<style>
+@app.route('/log', methods=['POST'])
+def receive_log():
+    try:
+        data = request.get_json()
 
-body{
-background:black;
-color:lime;
-font-family:monospace;
-padding:20px;
-}
+        chip = data.get('chip', 'UNKNOWN')
+        message = data.get('log', '')
 
-#log{
-height:600px;
-overflow:auto;
-border:1px solid lime;
-padding:10px;
-white-space:pre-wrap;
-}
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-</style>
+        with open(CSV_FILE, 'a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([now, chip, message])
 
-</head>
+        print(f"[{now}] {chip}: {message}")
 
-<body>
+        return jsonify({
+            "status": "success"
+        }), 200
 
-<h2>ESP32 UART LOGGER</h2>
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
-<div id="log"></div>
 
-<script>
+@app.route('/download')
+def download_csv():
+    from flask import send_file
+    return send_file(CSV_FILE, as_attachment=True)
 
-var socket = io();
-
-socket.on('new_log', function(data){
-
-    var log =
-    document.getElementById('log');
-
-    log.innerHTML += data + '\\n';
-
-    log.scrollTop =
-    log.scrollHeight;
-});
-
-</script>
-
-</body>
-</html>
-
-"""
-
-    return render_template_string(html)
-
-# ==========================================
-# RECEIVE LOGS
-# ==========================================
-
-@app.route('/log',
-           methods=['POST'])
-
-def log():
-
-    data = request.json
-
-    line = f'''
-[{data["timestamp"]}]
-GPIO      : {data["gpio"]}
-DIRECTION : {data["direction"]}
-CMD       : {data["cmd"]}
-CHECKSUM  : {data["checksum"]}
-DATA      : {data["data"]}
-------------------------------------------------
-'''
-
-    print(line)
-
-    socketio.emit(
-        'new_log',
-        line
-    )
-
-    return "OK"
-
-# ==========================================
-# START
-# ==========================================
 
 if __name__ == '__main__':
-
-    socketio.run(app,
-                 host='0.0.0.0',
-                 port=5000)
+    app.run(host='0.0.0.0', port=5000)
