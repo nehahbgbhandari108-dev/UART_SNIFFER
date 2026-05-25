@@ -1,73 +1,300 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>ESP32 UART Logger</title>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UART Sniffer - Live Logs</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
-            font-family: Arial;
-            background: #f4f4f4;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
             padding: 20px;
         }
 
-        h1 {
-            color: #333;
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            display: flex;
+            gap: 15px;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #e0e0e0;
+            flex-wrap: wrap;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .btn:hover {
+            background: #764ba2;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn.secondary {
+            background: #6c757d;
+        }
+
+        .btn.secondary:hover {
+            background: #5a6268;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .refresh-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: #28a745;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .table-container {
+            overflow-x: auto;
+            padding: 20px 30px;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            background: white;
-        }
-
-        th, td {
-            border: 1px solid #ddd;
-            padding: 10px;
-            text-align: left;
+            font-size: 0.95em;
         }
 
         th {
-            background: #222;
+            background: #667eea;
             color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #5568d3;
+        }
+
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
         }
 
         tr:nth-child(even) {
-            background: #f2f2f2;
+            background: #f8f9fa;
         }
 
-        .btn {
-            display: inline-block;
-            padding: 10px 20px;
-            background: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            margin-bottom: 20px;
+        .time-col {
+            color: #666;
+            font-size: 0.9em;
+            width: 180px;
+        }
+
+        .chip-col {
+            font-weight: 600;
+            color: #667eea;
+            width: 150px;
+        }
+
+        .message-col {
+            color: #333;
+            word-break: break-word;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 30px;
+            color: #999;
+        }
+
+        .empty-state h2 {
+            margin-bottom: 10px;
+            color: #666;
+        }
+
+        .footer {
+            background: #f8f9fa;
+            padding: 15px 30px;
+            border-top: 1px solid #e0e0e0;
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .button-group {
+                width: 100%;
+            }
+
+            .btn {
+                width: 100%;
+                text-align: center;
+            }
+
+            .stats {
+                width: 100%;
+                justify-content: space-around;
+            }
+
+            table {
+                font-size: 0.85em;
+            }
+
+            th, td {
+                padding: 10px;
+            }
         }
     </style>
 </head>
 <body>
+    <div class="container">
+        <div class="header">
+            <h1>UART Sniffer</h1>
+            <p>Real-time Serial Communication Logger</p>
+        </div>
 
-<h1>ESP32 UART Logs</h1>
+        <div class="controls">
+            <div class="button-group">
+                <button class="btn" onclick="location.reload()">🔄 Refresh Now</button>
+                <a class="btn secondary" href="/download">📥 Download CSV</a>
+            </div>
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-label">Total Logs</div>
+                    <div class="stat-value" id="log-count">{{ logs|length }}</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Auto-refresh</div>
+                    <div class="stat-value">5s<span class="refresh-indicator"></span></div>
+                </div>
+            </div>
+        </div>
 
-<a class="btn" href="/download">Download CSV</a>
+        <div class="table-container">
+            {% if logs %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Chip ID</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-table">
+                    {% for log in logs %}
+                    <tr>
+                        <td class="time-col">{{ log.time }}</td>
+                        <td class="chip-col">{{ log.chip }}</td>
+                        <td class="message-col">{{ log.message }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <h2>No logs yet</h2>
+                <p>Waiting for UART messages...</p>
+            </div>
+            {% endif %}
+        </div>
 
-<table>
-    <tr>
-        <th>Time</th>
-        <th>Chip ID</th>
-        <th>Message</th>
-    </tr>
+        <div class="footer">
+            <p>Logs are automatically refreshed every 5 seconds. Last update: <span id="last-update">Just now</span></p>
+        </div>
+    </div>
 
-    {% for log in logs %}
-    <tr>
-        <td>{{ log[0] }}</td>
-        <td>{{ log[1] }}</td>
-        <td>{{ log[2] }}</td>
-    </tr>
-    {% endfor %}
+    <script>
+        // Auto-refresh page every 5 seconds
+        setInterval(() => {
+            location.reload();
+        }, 5000);
 
-</table>
-
+        // Update the "last update" timestamp
+        document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+    </script>
 </body>
 </html>
