@@ -3,6 +3,8 @@ from pathlib import Path
 import csv
 from datetime import datetime
 import os
+import sqlite3
+DB_FILE = "uart_logs.db"
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
@@ -10,40 +12,89 @@ app.config['JSON_SORT_KEYS'] = False
 BASE_DIR = Path(__file__).resolve().parent
 CSV_FILE = BASE_DIR / 'logs.csv'
 
+DEFAULT_PORT = int(os.environ.get('PORT', 5000))
+def init_db():
 
-def ensure_csv_exists() -> None:
-    if not CSV_FILE.exists():
-        with CSV_FILE.open('w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Time", "ChipID", "Message"])
+    conn = sqlite3.connect(DB_FILE)
 
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        time TEXT,
+        chip TEXT,
+        source TEXT,
+        message TEXT
+    )
+    """)
 
-def read_logs() -> list[dict[str, str]]:
-    ensure_csv_exists()
-    logs: list[dict[str, str]] = []
-
-    with CSV_FILE.open('r', newline='', encoding='utf-8') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            if row:
-                logs.append({
-                    'time': row.get('Time', ''),
-                    'chip': row.get('ChipID', ''),
-                    'message': row.get('Message', ''),
-                })
-
-    return logs
+    conn.commit()
+    conn.close()
 
 
-def append_log(chip: str, message: str) -> None:
-    ensure_csv_exists()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+def read_logs():
 
-    with CSV_FILE.open('a', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow([now, chip, message])
+    conn = sqlite3.connect(DB_FILE)
 
-    print(f"[{now}] {chip}: {message}")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT time, chip, source, message
+        FROM logs
+        ORDER BY id DESC
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [
+        {
+            "time": row[0],
+            "chip": row[1],
+            "source": row[2],
+            "message": row[3]
+        }
+        for row in rows
+    ]
+
+def append_log(
+    chip,
+    source,
+    message,
+    timestamp=None
+):
+
+    if timestamp is None:
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    conn = sqlite3.connect(DB_FILE)
+
+    conn.execute(
+        """
+        INSERT INTO logs
+        (time, chip, source, message)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            timestamp,
+            chip,
+            source,
+            message
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+@app.after_request
+def add_header(response):
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, public, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 @app.route('/')
@@ -56,34 +107,89 @@ def home() -> str:
 @app.route('/log', methods=['POST'])
 def receive_log():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            raise ValueError('Invalid JSON payload')
 
         chip = data.get('chip', 'UNKNOWN')
-        message = data.get('log', '')
 
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        source = data.get(
+            'source',
+            'UNKNOWN'
+        )
 
-        with open(CSV_FILE, 'a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow([now, chip, message])
+        message = data.get(
+            'log',
+            ''
+        )
 
-        print(f"[{now}] {chip}: {message}")
+        timestamp = data.get(
+            'time'
+        )
+
+        append_log(
+            chip,
+            source,
+            message,
+            timestamp
+        )
 
         return jsonify({
-            "status": "success"
+            'status': 'success'
         }), 200
 
     except Exception as e:
         return jsonify({
-            "status": "error",
-            "message": str(e)
+            'status': 'error',
+            'message': str(e)
         }), 500
 
 
 @app.route('/download')
 def download_csv():
-    return send_file(CSV_FILE, as_attachment=True)
 
+    conn = sqlite3.connect(DB_FILE)
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            time,
+            chip,
+            source,
+            message
+        FROM logs
+        ORDER BY id DESC
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    csv_file = "logs.csv"
+
+    with open(
+        csv_file,
+        'w',
+        newline='',
+        encoding='utf-8'
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerow([
+            "Time",
+            "ChipID",
+            "Source",
+            "UART Data"
+        ])
+
+        writer.writerows(rows)
+
+    return send_file(
+        csv_file,
+        as_attachment=True
+    )
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs_json():
@@ -94,4 +200,11 @@ def get_logs_json():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+
+    init_db()
+
+    app.run(
+        host='0.0.0.0',
+        port=5000,
+        debug=False
+    )

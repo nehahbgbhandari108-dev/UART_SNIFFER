@@ -12,8 +12,11 @@
 // UARTS
 // =====================================================
 
-HardwareSerial touchTX(1);   // GPIO18
-HardwareSerial touchRX(2);   // GPIO16
+HardwareSerial uart18(1);   // UART1 for GPIO18 receive
+HardwareSerial uart16(2);   // UART2 for GPIO16 receive
+
+const int RX_PIN_18 = 18;
+const int RX_PIN_16 = 16;
 
 // =====================================================
 // WIFI
@@ -26,9 +29,10 @@ const char* password = "White@4321";
 // SERVER
 // =====================================================
 
-// Use Render URL or local test server URL.
-String serverURL = "https://uart-sniffer.onrender.com/log";
-// String serverURL = "http://192.168.68.112:5000/log"; // Local test
+// Public Render endpoint for cross-network uploads.
+const String serverURL = "https://uart-sniffer.onrender.com/log";
+// const String serverURL = "http://192.168.68.112:5000/log"; // Local test
+const String deviceId = "ESP32S3_N1648";
 
 // =====================================================
 // WEB SERVER
@@ -51,6 +55,7 @@ File logFile;
 #define PACKET_TIMEOUT_MS  100
 #define UPLOAD_TIMEOUT_MS  30000
 #define MAX_UPLOAD_LEN     600
+#define DEDUP_WINDOW_MS    0
 
 // =====================================================
 // BUFFERS
@@ -64,16 +69,27 @@ uint8_t buf16[MAX_PACKET];
 int len16 = 0;
 unsigned long last16 = 0;
 
+uint8_t lastBuf18[MAX_PACKET];
+int lastLen18 = 0;
+unsigned long lastPrint18 = 0;
+
+uint8_t lastBuf16[MAX_PACKET];
+int lastLen16 = 0;
+unsigned long lastPrint16 = 0;
+
 // =====================================================
 // FUNCTIONS
 // =====================================================
 
 String getHexString(const uint8_t* buf, int len) {
-  String s = "";
+  String s;
   for (int i = 0; i < len; i++) {
-    char temp[5];
-    sprintf(temp, "%02X ", buf[i]);
+    char temp[4];
+    sprintf(temp, "%02X", buf[i]);
     s += temp;
+    if (i < len - 1) {
+      s += ' ';
+    }
   }
   return s;
 }
@@ -117,8 +133,52 @@ String getTimestamp() {
   return String(ts);
 }
 
-void uploadPacket(const String& packetData) {
+bool connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
+    delay(500);
+    Serial.print('.');
+  }
+  Serial.println();
+
   if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection failed");
+    return false;
+  }
+
+  Serial.println("WiFi connected");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+  return true;
+}
+
+bool syncTime() {
+  configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
+  struct tm timeinfo;
+  Serial.print("Syncing time");
+  unsigned long start = millis();
+  while (!getLocalTime(&timeinfo) && millis() - start < 15000) {
+    delay(500);
+    Serial.print('.');
+  }
+  Serial.println();
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Time sync failed");
+    return false;
+  }
+  Serial.println("Time synchronized");
+  return true;
+}
+
+void uploadPacket(const String& packetData) {
+  if (!connectWiFi()) {
+    Serial.println("Skipping upload: WiFi not connected");
     return;
   }
 
@@ -128,45 +188,42 @@ void uploadPacket(const String& packetData) {
   HTTPClient http;
   http.setTimeout(UPLOAD_TIMEOUT_MS);
 
-  Serial.println("Uploading...");
-
   if (!http.begin(client, serverURL)) {
-    Serial.println("HTTP Begin Failed");
+    Serial.println("HTTP begin failed");
     return;
   }
 
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
-  payload += "\"chip\":\"ESP32S3\",";
+  payload += "\"chip\":\"" + deviceId + "\",";
   payload += "\"time\":\"" + getTimestamp() + "\",";
   payload += "\"log\":\"" + escapeJson(packetData) + "\"";
   payload += "}";
 
+  Serial.println("Uploading to Render:");
   Serial.println(payload);
 
   int code = http.POST(payload);
   Serial.print("HTTP Response: ");
   Serial.println(code);
-
   if (code > 0) {
     String response = http.getString();
     Serial.println(response);
   } else {
-    Serial.print("Upload Failed: ");
+    Serial.print("Upload failed: ");
     Serial.println(http.errorToString(code));
   }
 
   http.end();
 }
 
-void logToCSV(const String& timestamp,
-              const String& gpio,
-              const String& checksum,
-              const String& packetData) {
+void logToCSV(const String& timestamp, const String& gpio, const String& checksum, const String& packetData) {
   String line = timestamp + "," + gpio + "," + checksum + ",\"" + packetData + "\"";
-  logFile.println(line);
-  logFile.flush();
+  if (logFile) {
+    logFile.println(line);
+    logFile.flush();
+  }
 }
 
 void sendLivePacket(String line) {
@@ -199,43 +256,40 @@ void printPacket(const uint8_t* buf, int len, const char* gpio) {
   String liveLine = "[" + ts + "] " + String(gpio) + " " + packetData;
   sendLivePacket(liveLine);
 
-  // Dedup + upload throttling: only upload when checksum OK and
-  // the same packet hasn't been uploaded recently for the same GPIO.
-  if (csOK) {
-    bool isDuplicate = false;
-
-    if (String(gpio) == "GPIO18") {
-      if (len == lastLen18 && lastLen18 > 0 && memcmp(buf, lastBuf18, len) == 0 && (millis() - lastPrint18) < DEDUP_WINDOW_MS) {
-        isDuplicate = true;
-      } else {
-        // update last seen
-        memcpy(lastBuf18, buf, len);
-        lastLen18 = len;
-        lastPrint18 = millis();
-      }
-    } else if (String(gpio) == "GPIO16") {
-      if (len == lastLen16 && lastLen16 > 0 && memcmp(buf, lastBuf16, len) == 0 && (millis() - lastPrint16) < DEDUP_WINDOW_MS) {
-        isDuplicate = true;
-      } else {
-        // update last seen
-        memcpy(lastBuf16, buf, len);
-        lastLen16 = len;
-        lastPrint16 = millis();
-      }
-    }
-
-    if (isDuplicate) {
-      Serial.println("Duplicate packet within dedup window — skipping upload.");
-    } else {
-      String uploadData = packetData;
-      if (uploadData.length() > MAX_UPLOAD_LEN) {
-        uploadData = uploadData.substring(0, MAX_UPLOAD_LEN) + "...";
-      }
-      uploadPacket(uploadData);
-    }
-  } else {
+  if (!csOK) {
     Serial.println("Skipping upload due to checksum failure.");
+    return;
   }
+
+  bool isDuplicate = false;
+  if (String(gpio) == "GPIO18") {
+    if (len == lastLen18 && lastLen18 > 0 && memcmp(buf, lastBuf18, len) == 0 && (millis() - lastPrint18) < DEDUP_WINDOW_MS) {
+      isDuplicate = true;
+    } else {
+      memcpy(lastBuf18, buf, len);
+      lastLen18 = len;
+      lastPrint18 = millis();
+    }
+  } else if (String(gpio) == "GPIO16") {
+    if (len == lastLen16 && lastLen16 > 0 && memcmp(buf, lastBuf16, len) == 0 && (millis() - lastPrint16) < DEDUP_WINDOW_MS) {
+      isDuplicate = true;
+    } else {
+      memcpy(lastBuf16, buf, len);
+      lastLen16 = len;
+      lastPrint16 = millis();
+    }
+  }
+
+  if (isDuplicate) {
+    Serial.println("Duplicate packet within dedup window — skipping upload.");
+    return;
+  }
+
+  String uploadData = packetData;
+  if (uploadData.length() > MAX_UPLOAD_LEN) {
+    uploadData = uploadData.substring(0, MAX_UPLOAD_LEN) + "...";
+  }
+  uploadPacket(uploadData);
 }
 
 void setupWebPage() {
@@ -273,8 +327,27 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  touchTX.begin(9600, SERIAL_8N1, 18, -1);
-  touchRX.begin(9600, SERIAL_8N1, 16, -1);
+  // =====================================================
+  // PREVENT FLOATING RX PINS
+  // =====================================================
+
+  pinMode(RX_PIN_18, INPUT_PULLUP);
+  pinMode(RX_PIN_16, INPUT_PULLUP);
+
+  // =====================================================
+  // UART START
+  // =====================================================
+
+  uart18.begin(9600, SERIAL_8N1, RX_PIN_18, -1);
+  uart16.begin(9600, SERIAL_8N1, RX_PIN_16, -1);
+
+  // Bigger buffers
+  uart18.setRxBufferSize(1024);
+  uart16.setRxBufferSize(1024);
+
+  // =====================================================
+  // LITTLEFS
+  // =====================================================
 
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS Failed");
@@ -292,63 +365,68 @@ void setup() {
     Serial.println("Failed to open log file");
   }
 
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print('.');
-  }
-  Serial.println();
-  Serial.println("WiFi Connected");
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
+  // =====================================================
+  // WIFI + TIME
+  // =====================================================
 
-  configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
-  struct tm timeinfo;
-  Serial.print("Waiting for NTP time");
-  while (!getLocalTime(&timeinfo)) {
-    delay(500);
-    Serial.print('.');
-  }
-  Serial.println();
-  Serial.println("Time synchronized");
+  connectWiFi();
+  syncTime();
+
+  // =====================================================
+  // WEB
+  // =====================================================
 
   setupWebPage();
   server.begin();
   webSocket.begin();
 
+  // =====================================================
+  // START MESSAGE
+  // =====================================================
+
   Serial.println();
   Serial.println("==========================");
   Serial.println("UART LOGGER STARTED");
   Serial.println("==========================");
-  Serial.print("Browser: http://");
+
+  Serial.print("Local page: http://");
   Serial.println(WiFi.localIP());
+
+  Serial.println("Render dashboard: https://uart-sniffer.onrender.com/");
+  Serial.println("Upload endpoint: https://uart-sniffer.onrender.com/log");
+
+  Serial.println();
+  Serial.println("Waiting for UART packets...");
 }
 
 void loop() {
   server.handleClient();
   webSocket.loop();
 
-  while (touchTX.available()) {
-    uint8_t b = touchTX.read();
+  while (uart18.available()) {
+    uint8_t b = uart18.read();
     if (len18 == 0 && b != 0xB4) continue;
+    Serial.printf("RX18: %02X\n", b);
     if (len18 < MAX_PACKET) buf18[len18++] = b;
     last18 = millis();
   }
 
   if (len18 > 0 && millis() - last18 > PACKET_TIMEOUT_MS) {
+    Serial.printf("GPIO18 packet length=%d\n", len18);
     printPacket(buf18, len18, "GPIO18");
     len18 = 0;
   }
 
-  while (touchRX.available()) {
-    uint8_t b = touchRX.read();
+  while (uart16.available()) {
+    uint8_t b = uart16.read();
     if (len16 == 0 && b != 0xB4) continue;
+    Serial.printf("RX16: %02X\n", b);
     if (len16 < MAX_PACKET) buf16[len16++] = b;
     last16 = millis();
   }
 
   if (len16 > 0 && millis() - last16 > PACKET_TIMEOUT_MS) {
+    Serial.printf("GPIO16 packet length=%d\n", len16);
     printPacket(buf16, len16, "GPIO16");
     len16 = 0;
   }

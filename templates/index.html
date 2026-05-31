@@ -238,10 +238,10 @@
         </div>
 
         <div class="controls">
-            <div class="button-group">
-                <button class="btn" onclick="location.reload()">🔄 Refresh Now</button>
-                <a class="btn secondary" href="/download">📥 Download CSV</a>
-            </div>
+                <div class="button-group">
+                    <button class="btn" onclick="location.reload()">🔄 Refresh Now</button>
+                    <a class="btn secondary" href="/download">📥 Download CSV</a>
+                </div>
             <div class="stats">
                 <div class="stat-item">
                     <div class="stat-label">Total Logs</div>
@@ -261,7 +261,8 @@
                     <tr>
                         <th>Time</th>
                         <th>Chip ID</th>
-                        <th>Message</th>
+                        <th>Source</th>
+                        <th>UART Data</th>
                     </tr>
                 </thead>
                 <tbody id="logs-table">
@@ -288,13 +289,58 @@
     </div>
 
     <script>
-        // Auto-refresh page every 5 seconds
-        setInterval(() => {
-            location.reload();
-        }, 5000);
+        const apiUrl = '/api/logs';
+        const logCountEl = document.getElementById('log-count');
+        const lastUpdateEl = document.getElementById('last-update');
+        const logsTable = document.getElementById('logs-table');
 
-        // Update the "last update" timestamp
-        document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        function renderLogs(logs) {
+            if (!logsTable) return;
+            logsTable.innerHTML = '';
+
+            if (logs.length === 0) {
+                logsTable.innerHTML = `
+                    <tr>
+                        <td colspan="3" class="empty-state">
+                            <h2>No logs yet</h2>
+                            <p>Waiting for UART messages...</p>
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            logs.forEach(log => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="time-col">${log.time}</td>
+                    <td class="chip-col">${log.chip}</td>
+                    <td class="message-col">${log.message}</td>
+                `;
+                logsTable.appendChild(row);
+            });
+        }
+
+        async function fetchLogs() {
+            try {
+                const response = await fetch(apiUrl, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`Fetch failed: ${response.status}`);
+                }
+                const logs = await response.json();
+                renderLogs(logs);
+                logCountEl.textContent = logs.length;
+                lastUpdateEl.textContent = new Date().toLocaleTimeString();
+            } catch (error) {
+                console.error('Live update failed:', error);
+            }
+        }
+
+        setInterval(fetchLogs, 3000);
+        document.addEventListener('DOMContentLoaded', () => {
+            lastUpdateEl.textContent = new Date().toLocaleTimeString();
+            fetchLogs();
+        });
     </script>
 </body>
 </html>
