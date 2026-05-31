@@ -30,7 +30,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-
+init_db()
 def read_logs():
 
     conn = sqlite3.connect(DB_FILE)
